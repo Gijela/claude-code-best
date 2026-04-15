@@ -203,9 +203,9 @@ import {
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
 import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js';
 import { getScratchpadDir, isScratchpadEnabled } from '../utils/permissions/filesystem.js';
-import { WEB_FETCH_TOOL_NAME } from '../tools/WebFetchTool/prompt.js';
-import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js';
-import { clearSpeculativeChecks } from '../tools/BashTool/bashPermissions.js';
+import { WEB_FETCH_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/WebFetchTool/prompt.js';
+import { SLEEP_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SleepTool/prompt.js';
+import { clearSpeculativeChecks } from '@claude-code-best/builtin-tools/tools/BashTool/bashPermissions.js';
 import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
 import { getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '../utils/config.js';
 import { hasConsoleBillingAccess } from '../utils/billing.js';
@@ -258,6 +258,7 @@ import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
+import { getPipeDisplayRole, getPipeIpc, isPipeControlled } from '../utils/pipeTransport.js';
 import { useTasksV2WithCollapseEffect } from '../hooks/useTasksV2.js';
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
@@ -267,14 +268,15 @@ import { processSessionStartHooks } from '../utils/sessionStart.js';
 import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../utils/hooks.js';
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js';
 import { getTools, assembleToolPool } from '../tools.js';
-import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
-import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js';
-import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js';
+import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js';
+import { resolveAgentTools } from '@claude-code-best/builtin-tools/tools/AgentTool/agentToolUtils.js';
+import { resumeAgentBackground } from '@claude-code-best/builtin-tools/tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
-import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
+import type { ContentBlockParam, ContentBlock, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
+import type { InternalPermissionMode } from '../types/permissions.js';
 import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../utils/plans.js';
 import {
   clearSessionMetadata,
@@ -299,7 +301,7 @@ import {
 } from '../utils/toolResultStorage.js';
 import { partialCompactConversation } from '../services/compact/compact.js';
 import type { LogOption } from '../types/logs.js';
-import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js';
+import type { AgentColorName } from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js';
 import {
   fileHistoryMakeSnapshot,
   type FileHistoryState,
@@ -331,6 +333,22 @@ const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive =
   feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
 const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useScheduledTasks.js').useScheduledTasks : null;
+const useMasterMonitor = feature('UDS_INBOX')
+  ? require('../hooks/useMasterMonitor.js').useMasterMonitor
+  : () => undefined;
+const useSlaveNotifications = feature('UDS_INBOX')
+  ? require('../hooks/useSlaveNotifications.js').useSlaveNotifications
+  : () => undefined;
+const usePipeIpc = feature('UDS_INBOX') ? require('../hooks/usePipeIpc.js').usePipeIpc : () => undefined;
+const usePipeRelay = feature('UDS_INBOX')
+  ? require('../hooks/usePipeRelay.js').usePipeRelay
+  : () => ({ relayPipeMessage: () => false, pipeReturnHadErrorRef: { current: false } });
+const usePipePermissionForward = feature('UDS_INBOX')
+  ? require('../hooks/usePipePermissionForward.js').usePipePermissionForward
+  : () => undefined;
+const usePipeRouter = feature('UDS_INBOX')
+  ? require('../hooks/usePipeRouter.js').usePipeRouter
+  : () => ({ routeToSelectedPipes: () => false });
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
@@ -433,10 +451,10 @@ import {
   type AutoRunIssueReason,
 } from '../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
-import { TungstenLiveMonitor } from '../tools/TungstenTool/TungstenLiveMonitor.js';
+import { TungstenLiveMonitor } from '@claude-code-best/builtin-tools/tools/TungstenTool/TungstenLiveMonitor.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
 const WebBrowserPanelModule = feature('WEB_BROWSER_TOOL')
-  ? (require('../tools/WebBrowserTool/WebBrowserPanel.js') as typeof import('../tools/WebBrowserTool/WebBrowserPanel.js'))
+  ? (require('@claude-code-best/builtin-tools/tools/WebBrowserTool/WebBrowserPanel.js') as typeof import('@claude-code-best/builtin-tools/tools/WebBrowserTool/WebBrowserPanel.js'))
   : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { IssueFlagBanner } from '../components/PromptInput/IssueFlagBanner.js';
@@ -822,8 +840,7 @@ export function REPL({
   );
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
   const disableMessageActions = feature('MESSAGE_ACTIONS')
-    ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-      useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_MESSAGE_ACTIONS), [])
+    ? useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_MESSAGE_ACTIONS), [])
     : false;
 
   // Log REPL mount/unmount lifecycle
@@ -1477,7 +1494,6 @@ export function REPL({
     messages.length,
   );
   if (feature('AWAY_SUMMARY')) {
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
     useAwaySummary(messages, setMessages, isLoading);
   }
   const [cursor, setCursor] = useState<MessageActionsState | null>(null);
@@ -1514,8 +1530,7 @@ export function REPL({
   // the branch is dead-code-eliminated in non-KAIROS builds (same pattern
   // as useUnseenDivider above).
   const { maybeLoadOlder } = feature('KAIROS')
-    ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-      useAssistantHistory({
+    ? useAssistantHistory({
         config: remoteSessionConfig,
         setMessages,
         scrollRef,
@@ -1934,8 +1949,10 @@ export function REPL({
   const onlySleepToolActive = useMemo(() => {
     const lastAssistant = messages.findLast(m => m.type === 'assistant');
     if (lastAssistant?.type !== 'assistant') return false;
-    const inProgressToolUses = lastAssistant.message.content.filter(
-      b => b.type === 'tool_use' && inProgressToolUseIDs.has(b.id),
+    const content = lastAssistant.message?.content;
+    const contentArray = Array.isArray(content) ? content : [];
+    const inProgressToolUses = contentArray.filter(
+      (b): b is ContentBlock & { type: 'tool_use'; id: string } => b.type === 'tool_use' && inProgressToolUseIDs.has((b as { id: string }).id),
     );
     return (
       inProgressToolUses.length > 0 &&
@@ -2062,7 +2079,7 @@ export function REPL({
             // reflect the new coordinator/normal mode
             /* eslint-disable @typescript-eslint/no-require-imports */
             const { getAgentDefinitionsWithOverrides, getActiveAgentsFromList } =
-              require('../tools/AgentTool/loadAgentsDir.js') as typeof import('../tools/AgentTool/loadAgentsDir.js');
+              require('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js') as typeof import('@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js');
             /* eslint-enable @typescript-eslint/no-require-imports */
             getAgentDefinitionsWithOverrides.cache.clear?.();
             const freshAgentDefs = await getAgentDefinitionsWithOverrides(getOriginalCwd());
@@ -2971,11 +2988,11 @@ export function REPL({
       for (const m of messagesRef.current) {
         if (
           m.type === 'attachment' &&
-          m.attachment.type === 'queued_command' &&
-          m.attachment.commandMode === 'task-notification' &&
-          typeof m.attachment.prompt === 'string'
+          m.attachment!.type === 'queued_command' &&
+          m.attachment!.commandMode === 'task-notification' &&
+          typeof m.attachment!.prompt === 'string'
         ) {
-          existingPrompts.add(m.attachment.prompt);
+          existingPrompts.add(m.attachment!.prompt);
         }
       }
       const uniqueNotifications = notificationMessages.filter(
@@ -3049,7 +3066,7 @@ export function REPL({
             if (feature('PROACTIVE') || feature('KAIROS')) {
               proactiveModule?.setContextBlocked(false);
             }
-          } else if (newMessage.type === 'progress' && isEphemeralToolProgress(newMessage.data.type)) {
+          } else if (newMessage.type === 'progress' && isEphemeralToolProgress(((newMessage as unknown as { data?: { type?: string } }).data?.type))) {
             // Replace the previous ephemeral progress tick for the same tool
             // call instead of appending. Sleep/Bash emit a tick per second and
             // only the last one is rendered; appending blows up the messages
@@ -3062,10 +3079,12 @@ export function REPL({
             // "Initializing…" because it renders the full progress trail.
             setMessages(oldMessages => {
               const last = oldMessages.at(-1);
+              const lastData = last?.data as Record<string, unknown> | undefined;
+              const newData = newMessage.data as Record<string, unknown>;
               if (
                 last?.type === 'progress' &&
                 last.parentToolUseID === newMessage.parentToolUseID &&
-                last.data.type === newMessage.data.type
+                lastData?.type === newData.type
               ) {
                 const copy = oldMessages.slice();
                 copy[copy.length - 1] = newMessage;
@@ -3084,6 +3103,34 @@ export function REPL({
               proactiveModule?.setContextBlocked(true);
             } else if (newMessage.type === 'assistant') {
               proactiveModule?.setContextBlocked(false);
+            }
+          }
+          // Relay assistant response to master when in slave mode.
+          if (feature('UDS_INBOX') && newMessage.type === 'assistant') {
+            // Extract text from content blocks (API format)
+            const msg = newMessage.message as any;
+            const contentBlocks = msg?.content ?? (newMessage as any).content ?? [];
+            const textParts: string[] = [];
+            if (Array.isArray(contentBlocks)) {
+              for (const block of contentBlocks) {
+                if (typeof block === 'string') {
+                  textParts.push(block);
+                } else if (block?.type === 'text' && block.text) {
+                  textParts.push(block.text);
+                }
+              }
+            } else if (typeof contentBlocks === 'string') {
+              textParts.push(contentBlocks);
+            }
+            const text = textParts.join('\n').trim();
+            if ('isApiErrorMessage' in newMessage && newMessage.isApiErrorMessage) {
+              pipeReturnHadErrorRef.current = true;
+              relayPipeMessage({
+                type: 'error',
+                data: text || 'Slave request failed',
+              });
+            } else if (text) {
+              relayPipeMessage({ type: 'stream', data: text });
             }
           }
         },
@@ -3151,7 +3198,7 @@ export function REPL({
       // title silently fell through to the "Claude Code" default.
       if (!titleDisabled && !sessionTitle && !agentTitle && !haikuTitleAttemptedRef.current) {
         const firstUserMessage = newMessages.find(m => m.type === 'user' && !m.isMeta);
-        const text = firstUserMessage?.type === 'user' ? getContentText(firstUserMessage.message.content) : null;
+        const text = firstUserMessage?.type === 'user' ? getContentText(firstUserMessage.message!.content as string | ContentBlockParam[]) : null;
         // Skip synthetic breadcrumbs — slash-command output, prompt-skill
         // expansions (/commit → <command-message>), local-command headers
         // (/help → <command-name>), and bash-mode (!cmd → <bash-input>).
@@ -3305,13 +3352,25 @@ export function REPL({
         onQueryEvent(event);
       }
 
-      if (feature('BUDDY') && typeof fireCompanionObserver === 'function') {
-        void fireCompanionObserver(messagesRef.current, reaction =>
-          setAppState(prev => (prev.companionReaction === reaction ? prev : { ...prev, companionReaction: reaction })),
+      if (feature('BUDDY') && typeof (globalThis as Record<string, unknown>).fireCompanionObserver === 'function') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const _fireCompanionObserver = (globalThis as Record<string, any>).fireCompanionObserver as (msgs: unknown, cb: (r: unknown) => void) => void;
+        void _fireCompanionObserver(messagesRef.current, reaction =>
+          setAppState(prev => (prev.companionReaction === (reaction as typeof prev.companionReaction) ? prev : { ...prev, companionReaction: reaction as typeof prev.companionReaction })),
         );
       }
 
       queryCheckpoint('query_end');
+
+      if (feature('UDS_INBOX')) {
+        if (abortController.signal.aborted) {
+          pipeReturnHadErrorRef.current = true;
+          relayPipeMessage({
+            type: 'error',
+            data: 'Slave request was interrupted before completion.',
+          });
+        }
+      }
 
       // Capture ant-only API metrics before resetLoadingState clears the ref.
       // For multi-request turns (tool use loops), compute P50 across all requests.
@@ -3412,7 +3471,7 @@ export function REPL({
         // replayed as user-visible text.
         newMessages
           .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
-          .map(_ => getContentText(_.message.content))
+          .map(_ => getContentText(_.message.content as string | ContentBlockParam[]))
           .filter(_ => _ !== null)
           .forEach((msg, i) => {
             enqueue({ value: msg, mode: 'prompt' });
@@ -3424,6 +3483,7 @@ export function REPL({
       }
 
       try {
+        pipeReturnHadErrorRef.current = false;
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
         resetTimingRefs();
@@ -3456,15 +3516,26 @@ export function REPL({
           }
         }
 
-        await onQueryImpl(
-          latestMessages,
-          newMessages,
-          abortController,
-          shouldQuery,
-          additionalAllowedTools,
-          mainLoopModelParam,
-          effort,
-        );
+        try {
+          await onQueryImpl(
+            latestMessages,
+            newMessages,
+            abortController,
+            shouldQuery,
+            additionalAllowedTools,
+            mainLoopModelParam,
+            effort,
+          );
+        } catch (error) {
+          if (feature('UDS_INBOX')) {
+            pipeReturnHadErrorRef.current = true;
+            relayPipeMessage({
+              type: 'error',
+              data: error instanceof Error ? error.message : String(error),
+            });
+          }
+          throw error;
+        }
       } finally {
         // queryGuard.end() atomically checks generation and transitions
         // running→idle. Returns false if a newer query owns the guard
@@ -3478,6 +3549,13 @@ export function REPL({
           resetLoadingState();
 
           await mrOnTurnComplete(messagesRef.current, abortController.signal.aborted);
+
+          if (feature('UDS_INBOX') && !pipeReturnHadErrorRef.current) {
+            relayPipeMessage({
+              type: 'done',
+              data: '',
+            });
+          }
 
           // Notify bridge clients that the turn is complete so mobile apps
           // can stop the spark animation and show post-turn UI.
@@ -3651,13 +3729,13 @@ export function REPL({
           ...prev,
           initialMessage: null,
           toolPermissionContext: updatedToolPermissionContext,
-          ...(shouldStorePlanForVerification && {
+          ...(shouldStorePlanForVerification ? {
             pendingPlanVerification: {
-              plan: initialMsg.message.planContent!,
+              plan: initialMsg.message.planContent as string,
               verificationStarted: false,
               verificationCompleted: false,
             },
-          }),
+          } : {}),
         };
       });
 
@@ -3738,6 +3816,27 @@ export function REPL({
       // Resume loop mode if paused
       if (feature('PROACTIVE') || feature('KAIROS')) {
         proactiveModule?.resumeProactive();
+      }
+
+      // Route user input to selected pipe targets (extracted to usePipeRouter)
+      if (routeToSelectedPipes(input)) {
+        // Show the user's prompt in the message list so they can see what was sent
+        const userMessage = createUserMessage({ content: input });
+        setMessages(prev => [...prev, userMessage]);
+
+        if (!options?.fromKeybinding) {
+          addToHistory({
+            display: prependModeCharacterToInput(input, inputMode),
+            pastedContents,
+          });
+        }
+        setInputValue('');
+        helpers.setCursorOffset(0);
+        helpers.clearBuffer();
+        setPastedContents({});
+        setInputMode('prompt');
+        setIDESelection(undefined);
+        return;
       }
 
       // Handle immediate commands - these bypass the queue and execute right away
@@ -4330,14 +4429,15 @@ export function REPL({
       }
 
       // Restore state from the message we're rewinding to
+      const permMode = message.permissionMode as InternalPermissionMode | undefined;
       setAppState(prev => ({
         ...prev,
         // Restore permission mode from the message
         toolPermissionContext:
-          message.permissionMode && prev.toolPermissionContext.mode !== message.permissionMode
+          permMode && prev.toolPermissionContext.mode !== permMode
             ? {
                 ...prev.toolPermissionContext,
-                mode: message.permissionMode,
+                mode: permMode,
               }
             : prev.toolPermissionContext,
         // Clear stale prompt suggestion from previous conversation state
@@ -4373,7 +4473,7 @@ export function REPL({
           const newPastedContents: Record<number, PastedContent> = {};
           imageBlocks.forEach((block, index) => {
             if (block.source.type === 'base64') {
-              const id = message.imagePasteIds?.[index] ?? index + 1;
+              const id = (message.imagePasteIds as number[] | undefined)?.[index] ?? index + 1;
               newPastedContents[id] = {
                 id,
                 type: 'image',
@@ -4731,10 +4831,11 @@ export function REPL({
     [onQuery, mainLoopModel, store],
   );
 
+  const { relayPipeMessage, pipeReturnHadErrorRef } = usePipeRelay();
+
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE')
-    ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-      useVoiceIntegration({ setInputValueRaw, inputValueRef, insertTextRef })
+    ? useVoiceIntegration({ setInputValueRaw, inputValueRef, insertTextRef })
     : {
         stripTrailing: () => 0,
         handleKeyEvent: () => {},
@@ -4750,6 +4851,15 @@ export function REPL({
   });
 
   useMailboxBridge({ isLoading, onSubmitMessage: handleIncomingPrompt });
+  useMasterMonitor();
+  useSlaveNotifications();
+  const pipeIpcState = useAppState(s => getPipeIpc(s as any));
+
+  usePipePermissionForward({ store, tools, setMessages, setToolUseConfirmQueue, getToolUseContext, mainLoopModel });
+
+  // Pipe IPC lifecycle — extracted to usePipeIpc hook
+  usePipeIpc({ store, handleIncomingPrompt });
+  const { routeToSelectedPipes } = usePipeRouter({ store, setAppState, addNotification });
 
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
   if (feature('AGENT_TRIGGERS')) {
@@ -4760,7 +4870,6 @@ export function REPL({
     // useScheduledTasks's effect (not here) since wrapping a hook call in a dynamic
     // condition would break rules-of-hooks.
     const assistantMode = store.getState().kairosEnabled;
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
     useScheduledTasks!({ isLoading, assistantMode, setMessages });
   }
 
@@ -4771,28 +4880,27 @@ export function REPL({
   if (process.env.USER_TYPE === 'ant') {
     // Tasks mode: watch for tasks and auto-process them
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
     useTaskListWatcher({
       taskListId,
       isLoading,
       onSubmitTask: handleIncomingPrompt,
     });
-
-    // Loop mode: auto-tick when enabled (via /job command)
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
-    useProactive?.({
-      // Suppress ticks while an initial message is pending — the initial
-      // message will be processed asynchronously and a premature tick would
-      // race with it, causing concurrent-query enqueue of expanded skill text.
-      isLoading: isLoading || initialMessage !== null,
-      queuedCommandsLength: queuedCommands.length,
-      hasActiveLocalJsxUI: isShowingLocalJSXCommand,
-      isInPlanMode: toolPermissionContext.mode === 'plan',
-      onSubmitTick: (prompt: string) => handleIncomingPrompt(prompt, { isMeta: true }),
-      onQueueTick: (prompt: string) => enqueue({ mode: 'prompt', value: prompt, isMeta: true }),
-    });
   }
+
+  // Proactive mode: auto-tick when enabled (via /proactive command)
+  // Moved out of USER_TYPE === 'ant' block so external users can use it.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useProactive?.({
+    // Suppress ticks while an initial message is pending — the initial
+    // message will be processed asynchronously and a premature tick would
+    // race with it, causing concurrent-query enqueue of expanded skill text.
+    isLoading: isLoading || initialMessage !== null,
+    queuedCommandsLength: queuedCommands.length,
+    hasActiveLocalJsxUI: isShowingLocalJSXCommand,
+    isInPlanMode: toolPermissionContext.mode === 'plan',
+    onSubmitTick: (prompt: string) => handleIncomingPrompt(prompt, { isMeta: true }),
+    onQueueTick: (prompt: string) => enqueue({ mode: 'prompt', value: prompt, isMeta: true }),
+  });
 
   // Abort the current operation when a 'now' priority message arrives
   // (e.g. from a chat UI client via UDS).
@@ -4845,10 +4953,14 @@ export function REPL({
 
     // Find stop hook progress messages
     const progressMsgs = messages.filter(
-      (m): m is ProgressMessage<HookProgress> =>
-        m.type === 'progress' &&
-        m.data.type === 'hook_progress' &&
-        (m.data.hookEvent === 'Stop' || m.data.hookEvent === 'SubagentStop'),
+      (m): m is ProgressMessage<HookProgress> => {
+        if (m.type !== 'progress') return false;
+        const data = m.data as Record<string, unknown>;
+        return (
+          data.type === 'hook_progress' &&
+          (data.hookEvent === 'Stop' || data.hookEvent === 'SubagentStop')
+        );
+      },
     );
     if (progressMsgs.length === 0) return null;
 
@@ -4868,7 +4980,7 @@ export function REPL({
     // Count completed hooks
     const completedCount = count(messages, m => {
       if (m.type !== 'attachment') return false;
-      const attachment = m.attachment;
+      const attachment = m.attachment!;
       return (
         'hookEvent' in attachment &&
         (attachment.hookEvent === 'Stop' || attachment.hookEvent === 'SubagentStop') &&
@@ -5107,8 +5219,15 @@ export function REPL({
   // Handle shift+down for teammate navigation and background task management.
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
   // otherwise Shift+Down stacks BackgroundTasksDialog on top and deadlocks input.
+  // Third case: Shift+Down toggles the pipe IPC selector panel when pipes are active.
   useBackgroundTaskNavigation({
     onOpenBackgroundTasks: isShowingLocalJSXCommand ? undefined : () => setShowBashesDialog(true),
+    onTogglePipeSelector: () => {
+      setAppState((prev: any) => {
+        const pIpc = prev.pipeIpc ?? {};
+        return { ...prev, pipeIpc: { ...pIpc, selectorOpen: !pIpc.selectorOpen } };
+      });
+    },
   });
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit();
@@ -5363,12 +5482,12 @@ export function REPL({
   // /config, /theme, /diff, ...) both go here now.
   const toolJsxCentered = isFullscreenEnvEnabled() && toolJSX?.isLocalJSXCommand === true;
   const centeredModal: React.ReactNode = toolJsxCentered ? toolJSX!.jsx : null;
-
   // <AlternateScreen> at the root: everything below is inside its
   // <Box height={rows}>. Handlers/contexts are zero-height so ScrollBox's
   // flexGrow in FullscreenLayout resolves against this Box. The transcript
   // early return above wraps its virtual-scroll branch the same way; only
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
+
   const mainReturn = (
     <KeybindingSetup>
       <AnimatedTerminalTitle
@@ -5401,7 +5520,7 @@ export function REPL({
           isFullscreenEnvEnabled() &&
           (centeredModal != null || !focusedInputDialog || focusedInputDialog === 'tool-permission')
         }
-        onScroll={centeredModal || toolPermissionOverlay || viewedAgentTask ? undefined : composedOnScroll}
+        onScroll={composedOnScroll}
       />
       {feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? (
         <MessageActionsKeybindings handlers={messageActionHandlers} isActive={cursor !== null} />
@@ -5915,6 +6034,7 @@ export function REPL({
                           };
                           void launchUltraplan({
                             blurb,
+                            promptIdentifier: opts?.promptIdentifier,
                             getAppState: () => store.getState(),
                             setAppState,
                             signal: createAbortController().signal,

@@ -37,6 +37,19 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 
+/** Detect actual image MIME type from base64 data using magic bytes. */
+function detectMimeFromBase64(b64: string): string {
+  // First byte is enough to distinguish PNG (0x89) from JPEG (0xFF)
+  const c = b64.charCodeAt(0);
+  if (c === 0x89) return "image/png";
+  if (c === 0xFF) return "image/jpeg";
+  // RIFF = WebP
+  if (c === 0x52) return "image/webp";
+  // GIF
+  if (c === 0x47) return "image/gif";
+  return "image/png";
+}
+
 import { getDefaultTierForApp, getDeniedCategoryForApp, isPolicyDenied } from "./deniedApps.js";
 import type {
   ComputerExecutor,
@@ -88,6 +101,8 @@ export type CuErrorKind =
   | "state_conflict" // wrong state for action (call sequence, mouse already held)
   | "grant_flag_required" // action needs a grant flag (systemKeyCombos, clipboard*) from request_access
   | "display_error" // display enumeration failed (platform)
+  | "launch_failed" // failed to launch an external process (e.g. terminal)
+  | "element_not_found" // UI element not found (e.g. window, automation element)
   | "other";
 
 /**
@@ -906,9 +921,10 @@ async function handleRequestAccess(
       );
     }
 
+    const perms = recheck as { granted: false; accessibility: boolean; screenRecording: boolean };
     const missing: string[] = [];
-    if (!recheck.accessibility) missing.push("Accessibility");
-    if (!recheck.screenRecording) missing.push("Screen Recording");
+    if (!perms.accessibility) missing.push("Accessibility");
+    if (!perms.screenRecording) missing.push("Screen Recording");
     return errorResult(
       `macOS ${missing.join(" and ")} permission(s) not yet granted. ` +
         `The permission panel has been shown. Once the user grants the ` +
@@ -1423,9 +1439,10 @@ async function handleRequestTeachAccess(
       );
     }
 
+    const perms = recheck as { granted: false; accessibility: boolean; screenRecording: boolean };
     const missing: string[] = [];
-    if (!recheck.accessibility) missing.push("Accessibility");
-    if (!recheck.screenRecording) missing.push("Screen Recording");
+    if (!perms.accessibility) missing.push("Accessibility");
+    if (!perms.screenRecording) missing.push("Screen Recording");
     return errorResult(
       `macOS ${missing.join(" and ")} permission(s) not yet granted. ` +
         `The permission panel has been shown. Once the user grants the ` +
@@ -2144,7 +2161,7 @@ async function handleScreenshot(
 
     const monitorNote = await buildMonitorNote(
       adapter,
-      shot.displayId,
+      shot.displayId ?? 0,
       overrides.lastScreenshot?.displayId,
       overrides.onDisplayPinned !== undefined,
     );
@@ -2158,7 +2175,7 @@ async function handleScreenshot(
         {
           type: "image",
           data: shot.base64,
-          mimeType: "image/jpeg",
+          mimeType: detectMimeFromBase64(shot.base64),
         },
       ],
       screenshot: shot,
@@ -2213,7 +2230,7 @@ async function handleScreenshot(
 
   const monitorNote = await buildMonitorNote(
     adapter,
-    shot.displayId,
+    shot.displayId ?? 0,
     overrides.lastScreenshot?.displayId,
     overrides.onDisplayPinned !== undefined,
   );
@@ -2227,7 +2244,7 @@ async function handleScreenshot(
       {
         type: "image",
         data: shot.base64,
-        mimeType: "image/jpeg",
+        mimeType: detectMimeFromBase64(shot.base64),
       },
     ],
     // Piggybacked for serverDef.ts to stash on InternalServerContext.
@@ -2306,7 +2323,7 @@ async function handleZoom(
 
   // Return the image. NO `.screenshot` piggyback — this is the invariant.
   return {
-    content: [{ type: "image", data: zoomed.base64, mimeType: "image/jpeg" }],
+    content: [{ type: "image", data: zoomed.base64, mimeType: detectMimeFromBase64(zoomed.base64) }],
   };
 }
 
@@ -4082,8 +4099,8 @@ export async function handleToolCall(
       );
     }
     tccState = {
-      accessibility: osPerms.accessibility,
-      screenRecording: osPerms.screenRecording,
+      accessibility: (osPerms as { granted: false; accessibility: boolean; screenRecording: boolean }).accessibility,
+      screenRecording: (osPerms as { granted: false; accessibility: boolean; screenRecording: boolean }).screenRecording,
     };
   }
 

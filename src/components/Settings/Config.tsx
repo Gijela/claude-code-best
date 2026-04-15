@@ -65,6 +65,7 @@ import { Select } from '../CustomSelect/index.js'
 import { OutputStylePicker } from '../OutputStylePicker.js'
 import { LanguagePicker } from '../LanguagePicker.js'
 import {
+  type MemoryFileInfo,
   getExternalClaudeMdIncludes,
   getMemoryFiles,
   hasExternalClaudeMdIncludes,
@@ -214,7 +215,7 @@ export function Config({
   const showDefaultViewPicker =
     feature('KAIROS') || feature('KAIROS_BRIEF')
       ? (
-          require('../../tools/BriefTool/BriefTool.js') as typeof import('../../tools/BriefTool/BriefTool.js')
+          require('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js') as typeof import('@claude-code-best/builtin-tools/tools/BriefTool/BriefTool.js')
         ).isBriefEntitled()
       : false
   /* eslint-enable @typescript-eslint/no-require-imports */
@@ -291,7 +292,7 @@ export function Config({
     process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING,
   )
 
-  const memoryFiles = React.use(getMemoryFiles(true))
+  const memoryFiles = React.use(getMemoryFiles(true)) as MemoryFileInfo[]
   const shouldShowExternalIncludesToggle =
     hasExternalClaudeMdIncludes(memoryFiles)
 
@@ -465,6 +466,27 @@ export function Config({
               updateSettingsForSource('userSettings', {
                 promptSuggestionEnabled: enabled ? undefined : false,
               })
+            },
+          },
+        ]
+      : []),
+    ...(feature('POOR')
+      ? [
+          {
+            id: 'poorMode',
+            label: 'Poor mode (save tokens)',
+            value: (() => {
+              const PoorMode = require('../../commands/poor/poorMode.js') as typeof import('../../commands/poor/poorMode.js')
+              return PoorMode.isPoorModeActive()
+            })(),
+            type: 'boolean' as const,
+            onChange(enabled: boolean) {
+              const PoorMode = require('../../commands/poor/poorMode.js') as typeof import('../../commands/poor/poorMode.js')
+              PoorMode.setPoorMode(enabled)
+              setAppState(prev => ({
+                ...prev,
+                promptSuggestionEnabled: !enabled,
+              }))
             },
           },
         ]
@@ -1909,7 +1931,7 @@ export function Config({
               setShowSubmenu(null)
               setTabsHidden(false)
             }}
-            externalIncludes={getExternalClaudeMdIncludes(memoryFiles)}
+            externalIncludes={getExternalClaudeMdIncludes(memoryFiles as MemoryFileInfo[])}
           />
           <Text dimColor>
             <Byline>

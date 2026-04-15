@@ -100,8 +100,8 @@ import {
   AGENT_COLOR_TO_THEME_COLOR,
   AGENT_COLORS,
   type AgentColorName,
-} from '../../tools/AgentTool/agentColorManager.js'
-import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+} from '@claude-code-best/builtin-tools/tools/AgentTool/agentColorManager.js'
+import type { AgentDefinition } from '@claude-code-best/builtin-tools/tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import type {
@@ -1408,7 +1408,7 @@ function PromptInput({
             clearBuffer()
             resetHistory()
             return
-          } else if (result.error === 'no_team_context') {
+          } else if (!result.success && (result as { error: string }).error === 'no_team_context') {
             // No team context - fall through to normal prompt submission
           } else {
             // Unknown recipient - fall through to normal prompt submission
@@ -3135,13 +3135,13 @@ function getInitialPasteId(messages: Message[]): number {
     if (message.type === 'user') {
       // Check image paste IDs
       if (message.imagePasteIds) {
-        for (const id of message.imagePasteIds) {
+        for (const id of message.imagePasteIds as number[]) {
           if (id > maxId) maxId = id
         }
       }
       // Check text paste references in message content
-      if (Array.isArray(message.message.content)) {
-        for (const block of message.message.content) {
+      if (Array.isArray(message.message!.content)) {
+        for (const block of message.message!.content) {
           if (block.type === 'text') {
             const refs = parseReferences(block.text)
             for (const ref of refs) {
