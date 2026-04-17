@@ -1,3 +1,4 @@
+# 学习
 ## 概念梳理
 
 ```mermaid
@@ -67,3 +68,76 @@ mindmap
 > Agent = Model + Harness.  Harness engineering is how we build systems around models to turn them into work engines.  The model contains the intelligence and the harness makes that intelligence useful
 
 所以我们可以认为 Agent 就是 LLM + Harness Engineering. 
+
+
+## claude code 探索
+
+根据 Harness Engineering 的四层架构，探索 Claude Code 的实现：
+
+### 学习路径
+
+四层架构围绕 ReAct 循环构建，学习顺序：**建立循环 → 每轮需要 → 偶尔需要 → 顶层控制**
+
+```
+第1步：执行层（建立循环框架）
+    问题：模型只能聊天，没法干活
+    解决：工具系统 + 权限沙箱 + ReAct循环
+
+    文档：
+    docs/tools/what-are-tools.mdx      → 工具抽象设计
+    docs/safety/permission-model.mdx   → 权限模型
+    docs/safety/sandbox.mdx            → 沙箱机制
+
+    源码：
+    src/query.ts                       → ReAct循环主入口
+    src/tools.ts                       → 工具注册表
+    src/Tool.ts                        → Tool类型定义
+
+第2步：记忆层（每轮循环都需要）
+    问题：循环一长，上下文膨胀，约束被冲淡
+    解决：提示词工程 + 上下文工程 + 规则文件
+
+    文档：
+    docs/context/system-prompt.mdx     → 上下文组装策略
+    docs/context/token-budget.mdx      → Token预算管理
+    docs/context/compaction.mdx        → 压缩策略
+    docs/context/project-memory.mdx    → 跨会话持久化
+
+    源码：
+    src/context.ts                     → 上下文组装
+    src/utils/claudemd.ts              → CLAUDE.md加载
+
+第3步：反馈层（执行出错时才需要）
+    问题：工具执行可能失败，需要自动修复
+    解决：错误重试 + 自动修复 + Compaction
+
+    文档：
+    docs/conversation/the-loop.mdx     → 循环中的错误处理
+    docs/conversation/streaming.mdx    → 流式响应中的错误
+
+    源码：
+    src/query.ts                       → 错误重试逻辑
+    src/services/compact/              → Compaction服务
+
+第4步：编排层（循环的顶层控制）
+    问题：循环缺乏全局规划，容易跑偏或死循环
+    解决：任务拆解 + 子Agent + 协调器
+
+    文档：
+    docs/agent/sub-agents.mdx          → 子Agent机制
+    docs/agent/coordinator-and-swarm.mdx → 协调器与Swarm
+    docs/agent/worktree-isolation.mdx  → 工作树隔离
+
+    源码：
+    src/tools/AgentTool/               → Agent工具实现
+    src/utils/src/tools/AgentTool/     → Agent相关工具
+
+────────────────────────────────────────
+扩展学习（理解完整生态）
+    docs/introduction/                 → 整体认知
+    docs/features/                     → 功能特性
+    docs/extensibility/                → MCP协议、自定义Agent
+    docs/internals/                    → 内部机制
+```
+
+---
