@@ -141,3 +141,468 @@ mindmap
 ```
 
 ---
+
+## 学习笔记
+
+### 第1步：执行层 ✅
+
+#### 核心架构
+
+```
+┌─────────────────────────────────────────────────┐
+│  ReAct 循环 (src/query.ts)                       │
+│  while(true) { 思考 → 行动 → 反馈 }              │
+└─────────────────────────────────────────────────┘
+          ↓ AI 说"我要执行命令"
+┌─────────────────────────────────────────────────┐
+│  工具系统 (src/Tool.ts + src/tools.ts)           │
+│  50+ 工具通过 Tool 接口统一管理                   │
+└─────────────────────────────────────────────────┘
+          ↓ 权限检查
+┌─────────────────────────────────────────────────┐
+│  权限模型 (Allow/Ask/Deny)                       │
+│  五层规则来源 + 三维度匹配                        │
+└─────────────────────────────────────────────────┘
+          ↓ 允许执行
+┌─────────────────────────────────────────────────┐
+│  沙箱机制 (OS级隔离)                              │
+│  文件系统 + 网络限制                              │
+└─────────────────────────────────────────────────┘
+```
+
+#### ReAct 循环
+
+**本质**：一个 `while(true)` 无限循环，每次迭代代表一次"思考→行动→观察"
+
+**每次迭代的阶段**：
+1. 上下文预处理 → 压缩/优化消息
+2. 流式API调用 → AI 思考，返回 tool_use
+3. 工具执行 → 真正"干活"
+4. 终止或继续 → 有 tool_use 就继续
+
+**终止条件**：
+- `completed`：AI 未发出 tool_use
+- `aborted`：用户中断
+- `max_turns`：轮次超限
+- `prompt_too_long`：token 超限且无法压缩
+
+#### 工具系统
+
+**Tool 类型核心四要素**：
+| 字段 | 说明 |
+|------|------|
+| `name` | 唯一标识（如 `Bash`、`Read`） |
+| `inputSchema` | Zod schema，定义参数类型 |
+| `call()` | 执行函数 |
+| `prompt()` | 使用说明，注入 System Prompt |
+
+**调用链路**：
+```
+tool_use(name, input)
+  → validateInput()     // 校验参数
+  → canUseTool()        // 权限弹窗（Ask模式）
+  → call()              // 执行
+  → tool_result         // 返回给 AI
+```
+
+**50+ 工具分类**：文件操作、命令执行、对话管理、任务追踪、Web能力、规划与版本
+
+#### 权限模型
+
+**三级权限**：
+- `Allow`：自动放行
+- `Ask`：弹窗确认
+- `Deny`：直接拒绝
+
+**五层规则来源**（优先级高→低）：
+```
+session > cliArg > command > projectSettings > userSettings > policySettings
+```
+
+**三维度匹配**：
+- 工具名：`Bash`、`mcp__server1`
+- 命令模式：`git *`
+- 路径模式：`src/**`
+
+**四种权限模式**：
+| 模式 | 行为 |
+|------|------|
+| Default | 敏感操作逐一确认 |
+| Plan | 只读不写 |
+| Auto | 自动决策 |
+| Bypass | 全部放行 |
+
+#### 沙箱机制
+
+**核心关系**：
+```
+权限系统 → 决定"能不能执行"
+沙箱     → 决定"执行后能做什么"
+```
+
+**双层防御（Defense-in-Depth）**：
+- 应用层：权限规则匹配
+- OS 层：沙箱隔离（文件系统 + 网络）
+
+**平台差异**：
+| 平台 | 沙箱实现 |
+|------|---------|
+| macOS | sandbox-exec |
+| Linux/WSL2 | bubblewrap + seccomp |
+| Windows | 不支持 |
+
+**默认限制**：
+- 文件系统：只能写工作目录 + Claude 临时目录
+- 网络：只有白名单域名可访问
+- 强制拒绝：settings.json、.claude/skills 等高风险路径
+
+### 第2步：记忆层 ✅
+
+#### 核心架构
+
+```
+┌─────────────────────────────────────────────────┐
+│  System Prompt 组装 (src/constants/prompts.ts)  │
+│  string[] 数组 + 缓存分块策略                     │
+└─────────────────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────────────────┐
+│  静态区 (scope: 'global')                        │
+│  Intro、Rules、Tone & Style...                   │
+└─────────────────────────────────────────────────┘
+          ↓ BOUNDARY 分界
+┌─────────────────────────────────────────────────┐
+│  动态区 (每次会话不同)                            │
+│  Session Guidance、Memory、CLAUDE.md...          │
+└─────────────────────────────────────────────────┘
+```
+
+#### System Prompt 设计
+
+**为什么是 `string[]` 而非单个 `string`**：
+- 缓存分块：不变的部分（静态区）可获得独立缓存命中
+- 单个字符串任何字符变化都会导致整个缓存失效
+
+**三阶段管道**：
+```
+getSystemPrompt()           → string[]        (组装内容)
+buildEffectiveSystemPrompt() → SystemPrompt   (选择优先级)
+buildSystemPromptBlocks()    → TextBlockParam[] (分块+缓存标记)
+```
+
+**静态区 vs 动态区**：
+- 静态区：可跨组织缓存 (`scope: 'global'`)，仅 1P 用户可用
+- 动态区：每次会话不同，组织级缓存或不缓存
+- `BOUNDARY` 标记：分隔静态区与动态区，AI 看不到
+
+#### Token 预算管理
+
+**200K 上下文窗口分配**：
+```
+200K 总窗口
+├── 系统提示词 (~15-25K)
+├── 工具定义 (~10-20K)
+├── 用户上下文 (CLAUDE.md、git status)
+├── 输出预留 (默认 8K，最大 64K)
+└── 剩余：对话历史空间
+```
+
+**两级 Token 计数**：
+- 近似估算（毫秒级）：`content.length / 4`
+- 精确计数（API 调用）：`countTokens` 端点
+
+**自动压缩触发阈值**（200K 窗口）：
+- ~167K：warning 提示
+- ~180K：自动压缩触发（200K - 20K 输出 - 13K buffer）
+- ~197K：blocking limit
+
+#### Compaction 三层策略
+
+| 层级 | 触发条件 | 需要 API |
+|------|---------|:---:|
+| MicroCompact | 单个工具输出过长 | 否 |
+| Session Memory | 自动压缩（需 feature flag）| 否 |
+| 传统 API 摘要 | 手动 /compact 或回退 | 是 |
+
+**压缩后重新注入**（50K token 预算）：
+- 最近 5 个文件内容（每个 5K）
+- 已激活技能指令（总计 25K）
+- CLAUDE.md 内容
+
+**关键机制**：
+- `CompactBoundary`：标记压缩边界，后续只处理 boundary 之后的消息
+- 工具对完整性保护：确保 tool_use 和 tool_result 不被拆散
+
+#### 项目记忆系统
+
+**存储架构**：纯文件系统，无数据库
+```
+~/.claude/projects/<git-root>/memory/
+├── MEMORY.md        ← 入口索引（每次对话加载，≤200行/25KB）
+├── user_*.md        ← 用户记忆
+├── feedback_*.md    ← 反馈记忆
+├── project_*.md     ← 项目记忆
+└── reference_*.md   ← 参考记忆
+```
+
+**四类型分类法**：
+| 类型 | 存储内容 | 典型触发 |
+|------|---------|---------|
+| user | 用户角色、偏好 | "我是数据科学家" |
+| feedback | 用户纠正和确认 | "别 mock 数据库" |
+| project | 项目上下文 | "合并冻结从周四开始" |
+| reference | 外部系统指针 | "pipeline bugs 在 Linear" |
+
+**智能召回**：Sonnet 侧查询筛选 ≤5 条最相关记忆
+
+**关键约束**：只存储无法从当前项目状态推导的信息
+
+### 第3步：反馈层 ✅
+
+#### 核心架构
+
+```
+┌─────────────────────────────────────────────────┐
+│  流式响应 (src/services/api/claude.ts)           │
+│  SSE 事件流 + 停滞检测 + 空闲超时                 │
+└─────────────────────────────────────────────────┘
+          ↓ 错误检测
+┌─────────────────────────────────────────────────┐
+│  恢复路径 (src/query.ts)                         │
+│  输出截断 → 上下文超限 → Hook阻塞 → 模型降级      │
+└─────────────────────────────────────────────────┘
+          ↓ 自动修复
+┌─────────────────────────────────────────────────┐
+│  State 状态机                                    │
+│  transition 字段防止恢复路径无限循环              │
+└─────────────────────────────────────────────────┘
+```
+
+#### 流式响应机制
+
+**事件处理状态机**：
+```
+message_start
+  ├── content_block_start (text/tool_use/thinking)
+  │   ├── content_block_delta (增量数据)
+  │   └── content_block_stop (yield AssistantMessage)
+  └── message_delta (stop_reason + usage)
+message_stop
+```
+
+**流式错误处理**：
+| 场景 | 检测机制 | 处理方式 |
+|------|---------|---------|
+| 网络断开 | 被动停滞(30s) + 主动超时(90s) | 重试/非流式降级 |
+| API 限流 | 429 错误 | 指数退避重试 |
+| 输出超限 | `max_tokens` | 升级输出上限重试 |
+| 上下文超限 | `model_context_window_exceeded` | 触发 compaction |
+
+#### 五种恢复路径
+
+```
+1. next_turn（正常工具循环）
+   tool_use → 执行工具 → 结果追加 → continue
+
+2. max_output_tokens（输出截断）
+   截断 → 提升上限(64K) → 静默重试 → 恢复消息重试(≤3次)
+
+3. prompt_too_long（上下文超限）
+   413错误 → Context Collapse Drain → Reactive Compact
+
+4. stop_hook_blocking（Hook阻塞）
+   Stop hook注入阻塞错误 → AI重新思考 → continue
+
+5. token_budget_continuation（预算提示）
+   token达阈值 → 注入nudge消息 → AI加速收尾
+```
+
+#### 模型降级
+
+```
+主模型不可用 → 清空assistantMessages → 移除思维签名
+→ 切换fallbackModel → 生成系统消息 → 重新请求
+```
+
+**关键设计**：
+- `transition` 字段记录恢复原因，防止无限循环
+- `hasAttemptedReactiveCompact` 标志防止重复压缩
+- `maxOutputTokensRecoveryCount` 限制恢复次数
+
+### 第4步：编排层 ✅
+
+#### 核心架构
+
+```
+┌─────────────────────────────────────────────────┐
+│  子 Agent 机制 (AgentTool)                       │
+│  命名 Agent / Fork子进程 / GP回退                │
+└─────────────────────────────────────────────────┘
+          ↓ 任务委派
+┌─────────────────────────────────────────────────┐
+│  协作模式                                        │
+│  Coordinator Mode（星型） / Agent Swarms（蜂群）  │
+└─────────────────────────────────────────────────┘
+          ↓ 隔离机制
+┌─────────────────────────────────────────────────┐
+│  Worktree 隔离                                   │
+│  Git worktree 实现文件级隔离                      │
+└─────────────────────────────────────────────────┘
+```
+
+#### 子 Agent 三种路径
+
+| 路径 | 触发条件 | 特点 |
+|------|---------|------|
+| 命名 Agent | `subagent_type` 指定 | 独立工具池、独立权限 |
+| Fork 子进程 | Fork 启用 + 类型省略 | 共享 Prompt Cache、继承父工具 |
+| GP 回退 | Fork 关闭 + 类型省略 | 通用处理 |
+
+**内置 Agent**：
+| Agent | 模型 | 权限 | 用途 |
+|-------|------|------|------|
+| Explore | Haiku | 只读 | 代码库搜索 |
+| Plan | 继承 | 只读 | Plan Mode 研究 |
+| General-purpose | 继承 | 全部 | 通用任务 |
+
+**生命周期**：
+- 同步 Agent：可后台化（默认 120s）
+- 异步 Agent：立即返回 `async_launched`
+
+#### 协作模式对比
+
+| 维度 | Coordinator Mode | Agent Swarms |
+|------|-----------------|--------------|
+| 拓扑 | 星型（Coordinator 居中） | 星型+P2P 混合 |
+| 角色 | Coordinator 编排、Worker 执行 | Team Lead + Teammate 认领 |
+| 通信 | SendMessage + task-notification | Mailbox 消息系统 |
+| 适用 | 集中决策的复杂任务 | 高并行度独立任务 |
+
+**Coordinator 核心约束**：先理解，再分配
+
+**Agent Teams 核心机制**：
+- 共享任务列表 + 竞争认领
+- Mailbox 消息系统（message / broadcast）
+- Hook 事件：TaskCreated、TaskCompleted、TeammateIdle
+
+#### Worktree 隔离
+
+**解决的问题**：
+- 写入冲突：多个 Agent 同时编辑同一文件
+- 状态干扰：一个 Agent 的修改破坏另一个的环境
+- 不可区分：修改混在一起
+
+**目录结构**：
+```
+<repo-root>/.claude/worktrees/
+├── fix-auth-bug/      # 独立工作目录
+│   ├── .git           # 指向主仓库
+│   └── src/...
+└── add-dark-mode/     # 另一个 worktree
+```
+
+**生命周期**：
+- 创建：`EnterWorktreeTool` → `git worktree add -b worktree/<slug>`
+- 退出：`ExitWorktreeTool` → keep（保留）或 remove（删除）
+- 子 Agent：自动清理（有变更保留，无变更删除）
+
+**安全防护**：fail-closed 设计，变更统计失败时拒绝删除
+
+---
+
+## 扩展学习
+
+### MCP 协议
+
+**两种模式**：
+
+| 维度 | 内置 MCP | 外部 MCP |
+|------|---------|---------|
+| Transport | InProcessTransport（同进程） | stdio/SSE/HTTP/WebSocket |
+| 配置来源 | 动态注册 | settings.json/.mcp.json |
+| 进程模型 | 零开销 | 子进程或网络连接 |
+| 权限 | allowedTools 自动授权 | passthrough 进入权限确认 |
+
+**7种传输层**：stdio、sse、http、sse-ide、ws-ide、ws、claudeai-proxy、InProcess
+
+**核心流程**：
+```
+配置 → connectToServer（memoize缓存）→ fetchToolsForClient（LRU缓存）
+→ 工具名: mcp__<serverName>__<toolName>
+```
+
+### 自定义 Agent
+
+**三种来源**（优先级高→低）：
+```
+User/Project/Policy → Plugin → Built-in
+```
+
+**Markdown Agent 格式**：
+```markdown
+---
+name: "reviewer"
+description: "Code review specialist"
+tools: "Read,Glob,Grep"
+model: "haiku"
+permissionMode: "plan"
+isolation: "worktree"
+---
+你是代码审查专家...（正文 = system prompt）
+```
+
+**工具过滤**：
+- `tools`：白名单
+- `disallowedTools`：黑名单
+- `memory` 启用时自动注入 Write/Edit/Read
+
+### Skills 技能系统
+
+**Tool vs Skill**：
+| 维度 | Tool | Skill |
+|------|------|-------|
+| 粒度 | 单个原子操作 | 完整工作流 |
+| 触发 | AI 自主选择 | 用户 `/skill` 或 AI 匹配 |
+| 本质 | TypeScript 代码 | Prompt + 权限配置 |
+
+**五个来源**：内置命令、Bundled Skills、磁盘 Skills、MCP Skills、Legacy Commands
+
+**两条执行路径**：
+- Inline：Prompt 注入主对话流
+- Fork：独立子 Agent 执行
+
+**条件激活**：`paths` 模式匹配时才激活
+
+### Hooks 生命周期钩子
+
+**27 种 Hook 事件**：覆盖会话、工具执行、权限、子 Agent、压缩等
+
+**6 种 Hook 类型**：
+| 类型 | 执行方式 |
+|------|---------|
+| command | Shell 命令 |
+| prompt | 注入 AI 上下文 |
+| agent | 启动子 Agent |
+| http | HTTP 请求 |
+| callback | 内部 JS 函数 |
+| function | 运行时注册 |
+
+**四种能力**：拦截操作、修改行为、注入上下文、控制流程
+
+**安全机制**：所有 Hook 要求工作区信任
+
+### Feature Flags
+
+**机制**：`feature()` 构建时求值，`false` 分支被 DCE 移除
+
+**88+ 个 Flags 分类**：
+| 类别 | 代表性 Flags |
+|------|-------------|
+| Agent/自动化 | KAIROS、PROACTIVE、COORDINATOR_MODE |
+| 基础设施 | DAEMON、BG_SESSIONS、BRIDGE_MODE |
+| 安全/分类 | TRANSCRIPT_CLASSIFIER、BASH_CLASSIFIER |
+| 工具/能力 | WEB_BROWSER_TOOL、VOICE_MODE |
+| UI/体验 | BUDDY、QUICK_SEARCH |
+| 平台/实验 | ULTRAPLAN、ULTRATHINK |
+
+---
